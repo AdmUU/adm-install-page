@@ -2,7 +2,7 @@
 
 #========================================================
 # Adm agent install script
-#   
+#
 # @link     https://www.admin.im
 # @github   https://github.com/AdmUU/Admin.IM
 # @contact  dev@admin.im
@@ -36,7 +36,7 @@ usage() {
     echo "  -sid ID          Sponsor ID"
     echo "  -h               Display this help message"
 }
-    
+
 success() {
     printf "${GREEN}OK[$(date '+%Y-%m-%d %H:%M:%S')] %s${RESET}\n" "$*"
 }
@@ -49,6 +49,37 @@ tip() {
     printf "${BLUE}INFO${RESET}[$(date '+%Y-%m-%d %H:%M:%S')] %s\n" "$*"
 }
 
+menu() {
+    while true; do
+        echo "请选择要执行的操作 / Please select an operation:"
+        echo "1. 安装 / Install"
+        echo "2. 卸载 / Uninstall"
+        echo "0. 退出 / Exit"
+        echo -n "请输入选项 / Please enter your choice [0-2]: "
+        read choice
+
+        case $choice in
+            1)
+                check_update
+                install
+                register
+                break
+                ;;
+            2)
+                uninstall "true"
+                break
+                ;;
+            0)
+                echo "退出 / Exiting..."
+                exit 0
+                ;;
+            *)
+                echo "无效的选项，请重新输入 / Invalid option, please try again."
+                ;;
+        esac
+    done
+}
+
 check_root() {
    if [ "$(id -u)" -eq 0 ]; then
        return 0
@@ -57,7 +88,7 @@ check_root() {
            error "This script requires root privileges. Please install sudo or run as root." >&2
            exit 1
        fi
-       
+
        if ! sudo -n true 2>/dev/null; then
            error "This script requires sudo privileges. Please run with sudo or as root." >&2
            exit 1
@@ -66,16 +97,18 @@ check_root() {
 }
 
 uninstall() {
+    local delete_files=${1:-false}
+
     if systemctl list-unit-files | grep -q "adm-agent.service"; then
-        
+
         systemctl stop adm-agent.service 2>/dev/null || true
-        
+
         systemctl disable adm-agent.service 2>/dev/null || true
-        
+
         "$INSTALL_BIN_PATH" uninstall
-        
+
         systemctl daemon-reload
-        
+
         if ! systemctl list-unit-files | grep -q "adm-agent.service"; then
             if [ -z "$NEW_VERSION" ]; then
                 success "Adm-agent service successfully uninstalled."
@@ -88,17 +121,24 @@ uninstall() {
     else
         [ "$NEW_VERSION" = "" ] && tip "Adm-agent service is not installed."
     fi
+
+    if [ "$delete_files" = "true" ]; then
+        if id admuu &>/dev/null; then
+            userdel -r admuu 2>/dev/null
+            success "User 'admuu' has been deleted."
+        fi
+
+        rm -rf "/etc/systemd/system/adm-agent.service.d"
+        rm -rf "/usr/local/share/admuu"
+        rm -rf "/usr/local/bin/adm-agent"
+        success "Adm-agent files have been deleted."
+    fi
 }
 
 check_root
 
 if [ "$1" = "uninstall" ]; then
-    uninstall
-    if id admuu &>/dev/null; then
-        userdel -r admuu 2>/dev/null
-    fi
-    rm -rf "/etc/systemd/system/adm-agent.service.d"
-    rm -rf "/usr/local/share/admuu"
+    uninstall "true"
     exit $?
 fi
 
@@ -135,11 +175,6 @@ while [ $# -gt 0 ]; do
     shift
 done
 
-if [ ! -f "$INSTALL_BIN_PATH" ] && (([ -z "$API_SERVER" ] || [ -z "$API_KEY" ] || [ -z "$SECRET" ]) && [ "$SHARE" != "yes" ]); then   
-    error "Please provide API server address, key, secret or set share to yes."
-    exit 1
-fi
-
 get_arch() {
     local uarch
     uarch=$(uname -m)
@@ -173,10 +208,10 @@ get_arch() {
 compare_version_part() {
     local ver1=$1
     local ver2=$2
-    
+
     [ -z "$ver1" ] && ver1=0
     [ -z "$ver2" ] && ver2=0
-    
+
     if [ "$ver1" -gt "$ver2" ]; then
         return 1
     elif [ "$ver1" -lt "$ver2" ]; then
@@ -190,24 +225,24 @@ compare_versions() {
 
     ver1=$(echo "$1" | sed 's/^v//')
     ver2=$(echo "$2" | sed 's/^v//')
-    
+
     major1=$(echo "$ver1" | cut -d. -f1)
     major2=$(echo "$ver2" | cut -d. -f1)
-    
+
     compare_version_part "$major1" "$major2"
     result=$?
     [ $result -ne 0 ] && return $result
-    
+
     minor1=$(echo "$ver1" | cut -d. -f2)
     minor2=$(echo "$ver2" | cut -d. -f2)
-    
+
     compare_version_part "$minor1" "$minor2"
     result=$?
     [ $result -ne 0 ] && return $result
-    
+
     patch1=$(echo "$ver1" | cut -d. -f3)
     patch2=$(echo "$ver2" | cut -d. -f3)
-    
+
     compare_version_part "$patch1" "$patch2"
     return $?
 }
@@ -216,7 +251,7 @@ check_update() {
     local result
     local version_check
     local install_version="0.0.0"
-    
+
     if [ -f "$INSTALL_BIN_PATH" ]; then
         install_version=$($INSTALL_BIN_PATH -v)
     fi
@@ -231,15 +266,15 @@ check_update() {
         error "Failed to get release metadata" >&2
         exit 1
     fi
-    
+
     version=$(echo "$metadata" | awk -F'"version":"' '{print $2}' | awk -F'"' '{print $1}')
     if [ -z "$version" ]; then
         error "Failed to parse version from metadata" >&2
         exit 1
     fi
-    
+
     download_url="https://${UPDATE_SERVER}/admuu/adm-agent/${version}/adm-agent_linux_${arch}.tar.gz${version_check}"
-    
+
     tip "Latest version: $version"
 
     compare_versions "${install_version%%-*}" "${version%%-*}"
@@ -260,9 +295,15 @@ check_update() {
 
 install() {
     local tmp_file
-    
+
+    if [ ! -f "$INSTALL_BIN_PATH" ] && (([ -z "$API_SERVER" ] || [ -z "$API_KEY" ] || [ -z "$SECRET" ]) && [ "$SHARE" != "yes" ]); then
+        error "Please provide API server address, key, secret or set share to yes."
+        exit 1
+    fi    
+
     if [ "$NEW_VERSION" != "true" ]; then
-        exit 0
+        #exit 0
+        return
     fi
 
     create_user admuu
@@ -273,7 +314,7 @@ install() {
             exit 1
         fi
     fi
-    
+
     tmp_file="/tmp/adm-agent_${version}_${arch}.tar.gz"
 
     tip "Downloading..."
@@ -289,33 +330,37 @@ install() {
         rm -f "$tmp_file"
         exit 1
     fi
-    
+
     expected_checksum=$(echo "$checksums" | grep "adm-agent_linux_${arch}.tar.gz" | awk '{print $1}')
     if [ -z "$expected_checksum" ]; then
         error "Checksum not found for this architecture" >&2
         rm -f "$tmp_file"
         exit 1
     fi
-    
+
     actual_checksum=$(sha256sum "$tmp_file" | awk '{print $1}')
-    
+
     if [ "$actual_checksum" != "$expected_checksum" ]; then
         error "Checksum verification failed" >&2
         rm -f "$tmp_file"
         exit 1
     fi
-    
+
     tip "Checksum verified successfully"
-    
+
     archive_dir="/tmp/adm-agent_${version}/"
     mkdir -p "$archive_dir"
     tar -xzf "$tmp_file" -C "$archive_dir"
-    
+
     if ! mv "${archive_dir}/adm-agent" "$INSTALL_BIN_PATH"; then
         error "Failed to install to $INSTALL_BIN_PATH" >&2
         rm -f "$tmp_file"
         rm -rf "$archive_dir"
         exit 1
+    fi
+
+    if [ ! -f "/usr/local/bin/adm-agent" ]; then
+        ln -s /usr/local/share/admuu/agent/adm-agent /usr/local/bin/adm-agent
     fi
 
     chmod +x "$INSTALL_BIN_PATH"
@@ -350,10 +395,10 @@ create_user() {
 
 register() {
     local regrsp
-    
-    if ( [ -n "$API_SERVER" ] && [ -n "$API_KEY" ] && [ -n "$SECRET" ] ) || [ "$SHARE" = "yes" ]; then   
+
+    if ( [ -n "$API_SERVER" ] && [ -n "$API_KEY" ] && [ -n "$SECRET" ] ) || [ "$SHARE" = "yes" ]; then
         tip "Registering agent..."
-        
+
         regrsp=$("$INSTALL_BIN_PATH" register \
             -a "$API_SERVER" \
             -k "$API_KEY" \
@@ -361,7 +406,7 @@ register() {
             --share "$SHARE" \
             --sharename "$SHARE_NAME" \
             --sponsorid "$SPONSOR_ID" 2>&1)
-        
+
         local reg_status=$?
 
         if [ $reg_status -ne 0 ]; then
@@ -374,6 +419,7 @@ register() {
 
         "$INSTALL_BIN_PATH" install
 
+        # chown -R admuu:admuu "$CONFIG_FILE"
         chown -R admuu:admuu "${INSTALL_DIR}/agent"
 
         sed -i '/^RestartSec/cRestartSec=10' /etc/systemd/system/adm-agent.service
@@ -392,7 +438,7 @@ EOF
     fi
 
     systemctl daemon-reload
- 
+
     "$INSTALL_BIN_PATH" restart
 
     systemctl status adm-agent
@@ -402,8 +448,4 @@ EOF
 
 get_arch
 
-check_update
-
-install
-
-register
+menu
