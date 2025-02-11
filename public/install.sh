@@ -24,6 +24,8 @@ GREEN='\033[32m'
 RED='\033[0;31m'
 BLUE='\033[0;36m'
 RESET='\033[0m'
+MAX_RETRIES=3
+RETRY_DELAY=5
 
 usage() {
     echo "Usage: $0 [options]"
@@ -52,9 +54,12 @@ tip() {
 menu() {
     while true; do
         echo "请选择要执行的操作 / Please select an operation:"
-        echo "1. 安装 / Install"
-        echo "2. 卸载 / Uninstall"
-        echo "0. 退出 / Exit"
+        echo ""
+        echo -e "${GREEN}1.${RESET} 安装 / Install"
+        echo -e "${GREEN}2.${RESET} 卸载 / Uninstall"
+        echo " --------------"
+        echo -e "${GREEN}0.${RESET} 退出 / Exit"
+        echo ""
         echo -n "请输入选项 / Please enter your choice [0-2]: "
         read choice
 
@@ -247,6 +252,28 @@ compare_versions() {
     return $?
 }
 
+curl_with_retry() {
+    local retries=0
+    local max_retries=$MAX_RETRIES
+    local delay=$RETRY_DELAY
+    local response
+
+    while [ $retries -lt $max_retries ]; do
+        response=$(curl "$@")
+        if [ $? -eq 0 ]; then
+            echo "$response"
+            return 0
+        fi
+        retries=$((retries + 1))
+        if [ $retries -lt $max_retries ]; then
+            tip "Connection failed, retrying in ${delay} seconds... (Attempt $retries of $max_retries)"
+            sleep $delay
+        fi
+    done
+
+    return 1
+}
+
 check_update() {
     local result
     local version_check
@@ -261,7 +288,7 @@ check_update() {
     fi
 
     local metadata
-    metadata=$(curl -s --max-time 10 "https://${UPDATE_SERVER}/admuu/adm-agent/latest/metadata.json${version_check}")
+    metadata=$(curl_with_retry -s --max-time 10 "https://${UPDATE_SERVER}/admuu/adm-agent/latest/metadata.json${version_check}")
     if [ -z "$metadata" ]; then
         error "Failed to get release metadata" >&2
         exit 1
@@ -299,10 +326,9 @@ install() {
     if [ ! -f "$INSTALL_BIN_PATH" ] && (([ -z "$API_SERVER" ] || [ -z "$API_KEY" ] || [ -z "$SECRET" ]) && [ "$SHARE" != "yes" ]); then
         error "Please provide API server address, key, secret or set share to yes."
         exit 1
-    fi    
+    fi
 
     if [ "$NEW_VERSION" != "true" ]; then
-        #exit 0
         return
     fi
 
@@ -318,13 +344,13 @@ install() {
     tmp_file="/tmp/adm-agent_${version}_${arch}.tar.gz"
 
     tip "Downloading..."
-    if ! curl -s -L -o "$tmp_file" "$download_url"; then
+    if ! curl_with_retry -s -L -o "$tmp_file" "$download_url"; then
         error "Download $download_url failed." >&2
         rm -f "$tmp_file"
         exit 1
     fi
 
-    checksums=$(curl -s "https://${UPDATE_SERVER}/admuu/adm-agent/${version}/checksums.txt")
+    checksums=$(curl_with_retry -s "https://${UPDATE_SERVER}/admuu/adm-agent/${version}/checksums.txt")
     if [ -z "$checksums" ]; then
         error "Failed to fetch checksums" >&2
         rm -f "$tmp_file"
